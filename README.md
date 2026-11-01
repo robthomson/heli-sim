@@ -1,0 +1,77 @@
+# HeliSim
+
+A 3D RC helicopter flight simulator for FrSky Ethos radios, flown with the radio's own sticks.
+
+You stand at the edge of a flying field and the view turns to follow the helicopter, as when flying a real one. The model is a low-poly Bell 206 style scale fuselage (the same shape as the Rotorflight Configurator's, cut down from rotorflight-lua-ethos-suite `lib/heli3d.lua`). It has a translucent rotor disc that tilts with the cyclic, a ground shadow, and a dark belly, so upright and inverted are easy to tell apart.
+
+## Flying
+
+- Lower the throttle stick to start. The rotor spools up over the spool-up time (3 seconds by default).
+- **Acro** (default): the sticks set roll, pitch and yaw rates, as with a flybarless helicopter.
+- **Self-level**: the cyclic sets the tilt, and centre stick levels the helicopter (it also rolls out of inverted).
+- **3D collective** (default): centre stick is zero pitch and low stick is full negative, for inverted flight. **Normal**: low stick is slightly negative and the hover is just below centre. There is no expo on collective; full collective gives 3 g, so the 3D hover is at about +33%.
+- Landing too hard, sliding, tipping over, or hitting the ground with a blade or the tail is a crash.
+
+| Key | Action |
+| --- | --- |
+| Enter | Back to the pad |
+| Page | Settings |
+| Rotary | Zoom |
+| Exit | Close the tool |
+
+Settings (saved to `helisim.cfg` next to the script):
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Flight mode | Acro | Acro, Self-level |
+| Collective | 3D | 3D, Normal |
+| Cyclic rate | 450 deg/s | 50–1200 |
+| Yaw rate | 600 deg/s | 50–1500 |
+| Expo | 30% | 0–90% |
+| Head response | Crisp | Soft, Normal, Crisp, Locked in (how fast the rates follow the sticks) |
+| Spool-up time | 3 s | 1–20 s |
+| Rotor direction | Clockwise | Clockwise, Counter-clockwise |
+| Auto zoom | On | |
+| Show CPU stats | Off | |
+
+Stick sources are the analog sticks by function (`CATEGORY_ANALOG` members 0–3: rudder, elevator, throttle, aileron), so the stick mode does not matter.
+
+## Layout
+
+- `src/helisim/main.lua`: registers the system tool
+- `src/helisim/sim.lua`: app state, sticks, settings, HUD
+- `src/helisim/lib/physics.lua`: flight model (rate-stabilised rotor head, thrust, drag, ground effect, contact)
+- `src/helisim/lib/heli.lua`: the helicopter mesh (about 110 faces, built in stages)
+- `src/helisim/lib/render.lua`: camera, scenery, projection, display lists
+- `tools/headless.py`: runs the sim headless with scripted sticks, counts Lua instructions per callback, saves frames as PNG
+- `tools/make_icon.py`: draws `gfx/icon.png` from the mesh
+
+## Performance
+
+Ethos aborts a `paint` that runs about 20000 Lua instructions ("Max instructions count reached"). This was measured in the Ethos simulator, where `wakeup` was not held to the same budget. So `wakeup` does all the work (physics, camera, scenery, projection, culling, shading, sorting) into flat display lists, and `paint` only replays them, using about 25% of its budget. No tables are allocated per frame. Faces are sorted with a plain numeric `table.sort` (depth and face index packed into one number), so sorting runs no Lua comparator.
+
+When the helicopter is small on screen it is drawn without the mast, tail rotor and skids, and beyond 25 m one scale serves the whole model. When nothing has moved (sitting on the pad) the frame is not rebuilt or repainted.
+
+Turn on **Show CPU stats** to see paint usage, wakeups per second, triangle and face counts, memory and stick values.
+
+## VS Code deploy
+
+The same workflow as rotorflight-lua-ethos-suite:
+
+- `Deploy & Launch [SIM]`
+- `Deploy Radio`, `Deploy Radio [Fast]`
+- `Deploy Radio + Serial Debug`
+
+The simulator target comes from the Ethos extension settings in `.vscode/settings.json` (`ethos.board`, `ethos.protocol`, `ethos.release`, `ethos.simulatorsFolder`). The scripts go to `simulators/<BOARD>_<PROTOCOL>@<release>/scripts/helisim`.
+
+## Headless testing
+
+```text
+pip install lupa pillow
+python tools/headless.py --scenario hover --frames 100,200
+python tools/headless.py --scenario circuit --level --seconds 20 --frames 150,300
+```
+
+The script prints position, attitude and instruction counts, and writes frames to `tools/out/`. Its instruction counts include the Lua stand-ins for `lcd` calls, so its paint figures are higher than on a radio.
+
+The Ethos WASM simulator from [ethos-tools](https://github.com/FrSkyRC/ethos-tools) (`simulation/run_wasm.js --serve`) can run the real firmware headless. Its analog inputs 0–3 are rudder, throttle, elevator and aileron, in percent.
