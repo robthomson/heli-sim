@@ -1,7 +1,8 @@
-# 0.1.0
+# 1.0.0
 
-- Initial version of HeliSim.
-- Low-poly scale helicopter with a tilting rotor disc and a ground shadow.
-- Acro and self-level flight modes; 3D and normal collective.
+- Initial release of HeliSim.
+- Low-poly scale helicopter with a tilting rotor disc, a dark belly and a ground shadow.
+- Acro and self-level flight modes; 3D and normal collective (no expo on collective).
+- Settings: cyclic and yaw rates, expo, head response, spool-up time, rotor direction, auto zoom, CPU stats.
 - Flying field with hills, a tree line, trees and a helipad; the camera follows the helicopter from the pilot's position.
-- Settings saved to helisim.cfg.
+- Enter resets to the pad, Page opens the settings.
