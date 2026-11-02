@@ -2,6 +2,14 @@
 
 A 3D RC helicopter flight simulator for FrSky Ethos radios, flown with the radio's own sticks.
 
+| On the pad | Hover, side on |
+| --- | --- |
+| ![On the pad](.github/gfx/pad.png) | ![Hover, side on](.github/gfx/hover.png) |
+| **Forward flight** | **Inverted hover** |
+| ![Forward flight](.github/gfx/forward.png) | ![Inverted hover](.github/gfx/inverted.png) |
+
+*Screenshots from the Ethos simulator (X20S).*
+
 You stand at the edge of a flying field and the view turns to follow the helicopter, as when flying a real one. The model is a low-poly Bell 206 style scale fuselage (the same shape as the Rotorflight Configurator's, cut down from rotorflight-lua-ethos-suite `lib/heli3d.lua`). It has a translucent rotor disc that tilts with the cyclic, a ground shadow, and a dark belly, so upright and inverted are easy to tell apart.
 
 ## Flying
