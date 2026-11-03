@@ -40,6 +40,7 @@ local DEFAULTS = {
   spoolTime = 3,     -- seconds from stopped to full head speed
   autoZoom = true,
   rotor = "cw",
+  detail = 1,         -- 1 low (flat backdrop, simple model), 2 high
   stats = false,
 }
 
@@ -105,6 +106,7 @@ local function loadConfig()
   cfg.spoolTime = clamp(floor(cfg.spoolTime), 1, 20)
   if not RESPONSES[cfg.response] then cfg.response = DEFAULTS.response end
   if cfg.rotor ~= "ccw" then cfg.rotor = "cw" end
+  if cfg.detail ~= 2 then cfg.detail = 1 end
   return cfg
 end
 
@@ -116,7 +118,7 @@ local function saveConfig(cfg)
     if f then break end
   end
   if not f then return end
-  for _, key in ipairs({"level", "col3d", "cyclicRate", "yawRate", "expo", "response", "spoolTime", "autoZoom", "rotor", "stats"}) do
+  for _, key in ipairs({"level", "col3d", "cyclicRate", "yawRate", "expo", "response", "spoolTime", "autoZoom", "rotor", "detail", "stats"}) do
     local v = cfg[key]
     if type(v) == "boolean" then v = v and "1" or "0" end
     f:write(key, "=", tostring(v), "\n")
@@ -271,7 +273,17 @@ local function openSettings(state)
     function() return cfg.rotor == "ccw" and 1 or 0 end,
     function(v)
       set("rotor", v == 1 and "ccw" or "cw")
-      heli.build(cfg.rotor)
+      heli.build(cfg.rotor, cfg.detail)
+      state.phase = "boot"
+    end)
+  -- Low detail is for the radio, where the screen fills set the frame rate.
+  -- The rotor disc has fewer segments at low detail, so the mesh is rebuilt.
+  form.addChoiceField(form.addLine("Detail"), nil, {{"Low", 1}, {"High", 2}},
+    function() return cfg.detail end,
+    function(v)
+      set("detail", v)
+      render.setDetail(v)
+      heli.build(cfg.rotor, v)
       state.phase = "boot"
     end)
   if form.addBooleanField then
@@ -308,9 +320,10 @@ function sim.create()
     srcThr = analogSource(MEMBER_THR),
     srcAil = analogSource(MEMBER_AIL),
   }
-  heli.build(state.cfg.rotor)
+  heli.build(state.cfg.rotor, state.cfg.detail)
   physics.setGeometry(heli)
   render.init(heli)
+  render.setDetail(state.cfg.detail)
   physics.reset(state.h, render.PAD_X, render.PAD_Y, 0)
   return state
 end

@@ -275,6 +275,7 @@ local function finishFaces(from, to)
 end
 
 local oldVertices, oldFaces = 0, 0
+local discSegments = 8       -- main rotor disc: 8 at low detail, 12 at high
 
 local STAGES = {
   function()
@@ -294,7 +295,7 @@ local STAGES = {
     local fx = -2.9 * tailSide
     plate(vtx(fx, 10.3, 83.5), vtx(fx, 27.8, 97.6), vtx(fx, 27.8, 101.3), vtx(fx, 10.3, 92.0), MAT_TRIM)
     plate(vtx(fx, 7.5, 85.0), vtx(fx, 7.5, 92.6), vtx(fx, -6.2, 96.9), vtx(fx, -6.2, 92.6), MAT_BODY)
-    disc(0, 25.6, 0, 78, 12, "y", true)
+    disc(0, 25.6, 0, 78, discSegments, "y", true)
     -- Everything up to here is the low detail model (see heli.coreVertices);
     -- the parts after it are only drawn when the helicopter is big enough on
     -- screen to show them.
@@ -324,8 +325,9 @@ local stage = 0
 
 -- Start (re)building the mesh; rotor "cw" (default) puts the tail rotor on
 -- the right of the boom, "ccw" on the left.
-function heli.build(rotor)
+function heli.build(rotor, detail)
   tailSide = (rotor == "ccw") and -1 or 1
+  discSegments = (detail == 2) and 12 or 8
   stage = 1
   heli.ready = false
 end

@@ -40,6 +40,7 @@ Settings (saved to `helisim.cfg` next to the script):
 | Spool-up time | 3 s | 1–20 s |
 | Rotor direction | Clockwise | Clockwise, Counter-clockwise |
 | Auto zoom | On | |
+| Detail | Low | Low, High (see Performance) |
 | Show CPU stats | Off | |
 
 Stick sources are the analog sticks by function (`CATEGORY_ANALOG` members 0–3: rudder, elevator, throttle, aileron), so the stick mode does not matter.
@@ -59,6 +60,11 @@ Stick sources are the analog sticks by function (`CATEGORY_ANALOG` members 0–3
 Ethos aborts a `paint` that runs about 20000 Lua instructions ("Max instructions count reached"). This was measured in the Ethos simulator, where `wakeup` was not held to the same budget. So `wakeup` does all the work (physics, camera, scenery, projection, culling, shading, sorting) into flat display lists, and `paint` only replays them, using about 25% of its budget. No tables are allocated per frame. Faces are sorted with a plain numeric `table.sort` (depth and face index packed into one number), so sorting runs no Lua comparator.
 
 When the helicopter is small on screen it is drawn without the mast, tail rotor and skids, and beyond 25 m one scale serves the whole model. When nothing has moved (sitting on the pad) the frame is not rebuilt or repainted.
+
+On a radio the frame rate is set by the `lcd` fills, not by Lua, so the **Detail** setting trades scenery for speed:
+
+- **Low** (default): the hills and tree line are flat bands, there is no mown strip around the pad, each tree is one triangle, the shadow is two, the rotor disc has 8 segments and the low detail model is used until the helicopter is close.
+- **High**: hill and tree line silhouettes, the mown strip, two-tier trees, a 12-segment rotor disc and the full model from about 16 m.
 
 Turn on **Show CPU stats** to see paint usage, wakeups per second, triangle and face counts, memory and stick values.
 

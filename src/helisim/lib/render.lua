@@ -9,6 +9,12 @@
 -- lives in wakeup (about 20000 instructions a frame) and paint stays near
 -- 5000. No tables are allocated per frame.
 --
+-- Two detail levels (render.setDetail). Low, the default, is for the
+-- radio, where the lcd fills set the frame rate: the hills and tree line
+-- are flat bands, there is no mown strip, a tree is one triangle, the
+-- shadow two, and the low detail model is used unless the aircraft is
+-- close. High draws the silhouettes, the strip and the rest.
+--
 -- World axes: X east, Y north, Z up (metres). Camera yaw 0 looks north,
 -- yaw > 0 turns towards east; pitch > 0 looks up. The camera never rolls,
 -- so the horizon is always a level line.
@@ -44,10 +50,14 @@ local HELI_COLORS = {
   {44, 52, 70},       -- belly
 }
 
-local SKY_E = {-2, 4, 14, 35, 92}                   -- band edges, degrees
 local SKY_RGB = {{192, 216, 236}, {156, 194, 230}, {118, 166, 222}, {84, 136, 208}}
-local GROUND_E = {0, -1.5, -8, -92}
 local GROUND_RGB = {{94, 124, 80}, {82, 132, 60}, {76, 140, 56}}
+
+-- Sky and ground as full-width bands by elevation (degrees), top down:
+-- the edges and the colour of the band below each edge, one list per
+-- detail level. At low detail the hills and the tree line are two of
+-- the bands.
+local BANDS = {}
 
 local function rgb(t, a)
   return lcd.RGB(t[1], t[2], t[3], a)
@@ -78,6 +88,17 @@ local function buildColors()
   C.shadow = lcd.RGB(0, 0, 0, 0.35)
   C.trunk = lcd.RGB(92, 70, 50)
   C.pine = {lcd.RGB(34, 82, 44), lcd.RGB(44, 96, 50), lcd.RGB(28, 70, 40)}
+
+  local function bandList(E, cols)
+    local R = {}
+    for i = 1, #E do R[i] = rad(E[i]) end
+    return {R = R, C = cols}
+  end
+  local sky, ground = C.sky, C.ground
+  BANDS[1] = bandList({92, 35, 14, 4, 3.4, 1.5, 0, -1.5, -8, -92},
+    {sky[4], sky[3], sky[2], sky[1], C.hills, C.treeline, ground[1], ground[2], ground[3]})
+  BANDS[2] = bandList({92, 35, 14, 4, 0, -1.5, -8, -92},
+    {sky[4], sky[3], sky[2], sky[1], ground[1], ground[2], ground[3]})
 end
 
 ---------------------------------------------------------------------------
@@ -110,6 +131,8 @@ local function ringTables(elev)
 end
 
 local hillRing, treeRing
+
+local detail = 1                     -- 1 low (default), 2 high
 
 -- The mown strip, the helipad, field markings (world x, y).
 local STRIP_X0, STRIP_X1, STRIP_Y0, STRIP_Y1 = -45, 45, 3, 20
@@ -289,6 +312,14 @@ local function line(x0, y0, z0, x1, y1, z1, col)
   LCOL[n] = col
 end
 
+-- Screen y of an elevation (radians), off the screen beyond the poles.
+local function elevY(e)
+  e = e - camPitch
+  if e >= pi * 0.49 then return -1 end
+  if e <= -pi * 0.49 then return scrH + 1 end
+  return cy - focal * tan(e)
+end
+
 -- A ring of silhouette points between the horizon and its elevations.
 local function silhouette(r, col)
   local cp, sp = cos(camPitch), sin(camPitch)
@@ -332,6 +363,10 @@ local function tree(t)
   local sbx, sby = cx + bx * f / bz, cy - by * f / bz
   local stx, sty = cx + tx * f / tz, cy - ty * f / tz
   local hw = w * 0.5 * f / bz
+  if detail == 1 then
+    tri(sbx - hw, sby, sbx + hw, sby, stx, sty, C.pine[t[5]])
+    return
+  end
   local dx, dy = stx - sbx, sty - sby
   -- Trunk.
   local tw = max(1, hw * 0.14)
@@ -383,6 +418,7 @@ local facesPending = false
 local faceLimit = 0                  -- faces in the model drawn this frame
 local allInFront = true              -- no vertex behind the camera this frame
 local LOD_PX = 35                    -- rotor radius on screen below which the low detail model is used
+local LOD_PX_LOW = 60                -- the same at low detail
 local WEAK_DIST = 25                 -- metres beyond which one scale serves the whole model
 
 local function heliFrame(h, discRoll, discPitch)
@@ -426,7 +462,7 @@ local function heliFrame(h, discRoll, discPitch)
   -- Small on screen: the low detail model (no mast, tail rotor or skids).
   local nv = heli.vertexCount
   faceLimit = heli.faceCount
-  if radiusPx < LOD_PX then nv, faceLimit = heli.coreVertices, heli.coreFaces end
+  if radiusPx < (detail == 2 and LOD_PX or LOD_PX_LOW) then nv, faceLimit = heli.coreVertices, heli.coreFaces end
 
   local MX, MY, MZ = heli.MX, heli.MY, heli.MZ
   local ccx, ccy = cx, cy
@@ -598,27 +634,22 @@ function render.frame(h, w, hgt, discRoll, discPitch)
 
   -- Sky and ground bands, by elevation.
   bandCount = 0
-  local f = focal
-  for i = 1, #SKY_E - 1 do
-    local e1 = rad(SKY_E[i + 1]) - camPitch
-    local y1 = (e1 >= pi * 0.49) and -1 or (cy - f * tan(e1))
-    local e0 = rad(SKY_E[i]) - camPitch
-    local y0 = (e0 <= -pi * 0.49) and scrH or (cy - f * tan(e0))
-    band(y1, y0, C.sky[i])
-  end
-  for i = 1, #GROUND_E - 1 do
-    local e0 = rad(GROUND_E[i]) - camPitch
-    local e1 = rad(GROUND_E[i + 1]) - camPitch
-    local y0 = (e0 >= pi * 0.49) and -1 or (cy - f * tan(e0))
-    local y1 = (e1 <= -pi * 0.49) and scrH + 1 or (cy - f * tan(e1))
-    band(y0, y1, C.ground[i])
+  local bl = BANDS[detail]
+  local R, BC = bl.R, bl.C
+  local yPrev = elevY(R[1])
+  for i = 1, #BC do
+    local y = elevY(R[i + 1])
+    band(yPrev, y, BC[i])
+    yPrev = y
   end
 
   -- Ground layer.
   triCount, lineCount = 0, 0
-  silhouette(hillRing, C.hills)
-  silhouette(treeRing, C.treeline)
-  groundQuad(STRIP_X0, STRIP_Y0, STRIP_X1, STRIP_Y1, C.strip)
+  if detail == 2 then
+    silhouette(hillRing, C.hills)
+    silhouette(treeRing, C.treeline)
+    groundQuad(STRIP_X0, STRIP_Y0, STRIP_X1, STRIP_Y1, C.strip)
+  end
   groundEllipse(render.PAD_X, render.PAD_Y, 1, 0, render.PAD_R, render.PAD_R, 8, C.pad)
   -- Shadow under the helicopter: a long ellipse along its heading.
   if h.pz < 30 then
@@ -626,7 +657,7 @@ function render.frame(h, w, hgt, discRoll, discPitch)
     local nn = sqrt(nx * nx + ny * ny)
     if nn < 0.2 then nx, ny, nn = -h.r12, -h.r22, sqrt(h.r12 * h.r12 + h.r22 * h.r22) end
     nx, ny = nx / nn, ny / nn
-    groundEllipse(h.px, h.py, nx, ny, 0.75, 0.32, 6, C.shadow)
+    groundEllipse(h.px, h.py, nx, ny, 0.75, 0.32, detail == 2 and 6 or 4, C.shadow)
   end
   triGround = triCount
 
@@ -657,6 +688,12 @@ end
 -- Build the next frame even if nothing has moved (colours or settings
 -- changed).
 function render.dirty()
+  lastW = nil
+end
+
+-- Detail level: 1 low (default), 2 high.
+function render.setDetail(level)
+  detail = (level == 2) and 2 or 1
   lastW = nil
 end
 
