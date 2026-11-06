@@ -453,7 +453,7 @@ local faceLimit = 0                  -- faces in the model drawn this frame
 local allInFront = true              -- no vertex behind the camera this frame
 local LOD_PX = 35                    -- rotor radius on screen below which the low detail model is used
 local LOD_PX_LOW = 60                -- the same at low detail
-local WEAK_DIST = 25                 -- metres beyond which one scale serves the whole model
+local WEAK_DIST = 15                 -- metres beyond which one scale serves the whole model
 
 local function heliFrame(h, discRoll, discPitch)
   heliMode = 0
