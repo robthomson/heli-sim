@@ -65,7 +65,7 @@ When the helicopter is small on screen it is drawn without the mast, tail rotor 
 
 On a radio both the Lua work and the `lcd` fills cost frame time, and the **Detail** setting trades scenery for speed:
 
-- **Low** (default): the hills and tree line are flat bands, there is no mown strip around the pad, the shadow is two triangles, the rotor disc has 8 segments and the low detail model is used until the helicopter is close.
+- **Low** (default): the hills and tree line are flat bands, there is no mown strip around the pad (nor its edge lines), the shadow is two triangles, the rotor disc has 8 segments and the low detail model is used until the helicopter is close.
 - **High**: hill and tree line silhouettes, the mown strip, a 12-segment rotor disc and the full model from about 16 m.
 
 Turn on **Show CPU stats** to see, on a second bar at the bottom, per second, the paints (fps) and wakeups, the mean time of a wakeup and of a paint, and the paint's instruction budget; below that triangle and face counts, memory and stick values.

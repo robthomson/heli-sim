@@ -10,9 +10,10 @@
 -- 5000. No tables are allocated per frame.
 --
 -- Two detail levels (render.setDetail). Low, the default, is for the
--- radio: the hills and tree line are flat bands, there is no mown strip,
--- the shadow is two triangles, and the low detail model is used unless the
--- aircraft is close. High draws the silhouettes, the strip and the rest.
+-- radio: the hills and tree line are flat bands, there is no mown strip
+-- (nor its edge lines), the shadow is two triangles, and the low detail
+-- model is used unless the aircraft is close. High draws the silhouettes,
+-- the strip and the rest.
 -- Trees are the same at both: a rectangle trunk and a circle crown.
 --
 -- World axes: X east, Y north, Z up (metres). Camera yaw 0 looks north,
@@ -227,6 +228,7 @@ end
 -- call costs about as much as ten instructions.
 local function fan(n, X, Y, Z, col)
   local f, ccx, ccy = focal, cx, cy
+  local X1, Y1, X2, Y2, X3, Y3, CO = TX1, TY1, TX2, TY2, TX3, TY3, TCOL
   local t = triCount
   local x0, y0 = ccx + X[1] * f / Z[1], ccy - Y[1] * f / Z[1]
   local xp, yp = ccx + X[2] * f / Z[2], ccy - Y[2] * f / Z[2]
@@ -234,7 +236,7 @@ local function fan(n, X, Y, Z, col)
     local z = Z[i]
     local xi, yi = ccx + X[i] * f / z, ccy - Y[i] * f / z
     t = t + 1
-    TX1[t], TY1[t], TX2[t], TY2[t], TX3[t], TY3[t], TCOL[t] = x0, y0, xp, yp, xi, yi, col
+    X1[t], Y1[t], X2[t], Y2[t], X3[t], Y3[t], CO[t] = x0, y0, xp, yp, xi, yi, col
     xp, yp = xi, yi
   end
   triCount = t
@@ -245,8 +247,9 @@ local function polygon(n, col)
   -- one wholly inside as it is, clip the rest.
   local any, all = 0, 31
   local kx_, ky_ = kx, ky
+  local X, Y, Z = PX, PY, PZ
   for i = 1, n do
-    local x, y, z = PX[i], PY[i], PZ[i]
+    local x, y, z = X[i], Y[i], Z[i]
     local code = 0
     if z < NEAR then code = 1 end
     local zx, zy = kx_ * z, ky_ * z
@@ -295,12 +298,13 @@ local function groundEllipse(gx, gy, ux, uy, ra, rb, n, col)
   local rx, ry, upx, upy, fwx, fwy = cRx, cRy, cUx, cUy, cFx, cFy
   local ox, oy = gx - EYE_X, gy - EYE_Y
   local uz0, fz0 = -EYE_Z * cUz, -EYE_Z * cFz
+  local X, Y, Z = PX, PY, PZ
   for k = 1, n do
     local ca, sa = UC[k] * ra, US[k] * rb
     local dx, dy = ox + ux * ca - uy * sa, oy + uy * ca + ux * sa
-    PX[k] = dx * rx + dy * ry
-    PY[k] = dx * upx + dy * upy + uz0
-    PZ[k] = dx * fwx + dy * fwy + fz0
+    X[k] = dx * rx + dy * ry
+    Y[k] = dx * upx + dy * upy + uz0
+    Z[k] = dx * fwx + dy * fwy + fz0
   end
   polygon(n, col)
 end
@@ -431,8 +435,12 @@ do
 end
 
 -- Tilt the main rotor disc about the hub (pitch > 0 dips the front,
--- roll > 0 the right side), small-angle.
+-- roll > 0 the right side), small-angle. Skipped while the tilt stays the
+-- same (render.dirty() forgets it, as after a mesh rebuild).
+local tiltRoll, tiltPitch
 local function tiltDisc(rollR, pitchR)
+  if rollR == tiltRoll and pitchR == tiltPitch then return end
+  tiltRoll, tiltPitch = rollR, pitchR
   local MX, MY, MZ, DRX, DRY, DRZ = heli.MX, heli.MY, heli.MZ, heli.DRX, heli.DRY, heli.DRZ
   local hx, hy, hz = heli.hubX, heli.hubY, heli.hubZ
   local sp, cp, sr = sin(pitchR), cos(pitchR), sin(rollR)
@@ -449,6 +457,11 @@ end
 local fa31, fa32, fa33 = 0, 0, 1
 local emx_, emy_, emz_, lmx_, lmy_, lmz_ = 0, 0, 0, 0, 0, 1
 local facesPending = false
+-- Per face: its material's shade levels, or false for the translucent
+-- disc (one lookup instead of the material, the disc test and the shade
+-- table). Rebuilt after render.dirty() (a new mesh).
+local FSH = {}
+local fshStale = true
 local faceLimit = 0                  -- faces in the model drawn this frame
 local allInFront = true              -- no vertex behind the camera this frame
 local LOD_PX = 35                    -- rotor radius on screen below which the low detail model is used
@@ -499,6 +512,7 @@ local function heliFrame(h, discRoll, discPitch)
   if radiusPx < (detail == 2 and LOD_PX or LOD_PX_LOW) then nv, faceLimit = heli.coreVertices, heli.coreFaces end
 
   local MX, MY, MZ = heli.MX, heli.MY, heli.MZ
+  local SX, SY = SX, SY
   local ccx, ccy = cx, cy
   allInFront = true
   if t3 > WEAK_DIST then
@@ -547,13 +561,22 @@ local function heliFaces()
   facesPending = false
   local a31, a32, a33 = fa31, fa32, fa33
   local emx, emy, emz, lmx, lmy, lmz = emx_, emy_, emz_, lmx_, lmy_, lmz_
-  local FA, FB, FC, FD, FMAT, FTWO = heli.FA, heli.FB, heli.FC, heli.FD, heli.FMAT, heli.FTWO
+  local FA, FB, FC, FD, FTWO = heli.FA, heli.FB, heli.FC, heli.FD, heli.FTWO
   local FNX, FNY, FNZ, FPD = heli.FNX, heli.FNY, heli.FNZ, heli.FPD
   local FCX, FCY, FCZ = heli.FCX, heli.FCY, heli.FCZ
-  local MAT_DISC = heli.MAT_DISC
+  if fshStale then
+    fshStale = false
+    local FMAT, MAT_DISC = heli.FMAT, heli.MAT_DISC
+    for i = 1, heli.faceCount do
+      local m = FMAT[i]
+      FSH[i] = m ~= MAT_DISC and SHADES[m]
+    end
+    for i = heli.faceCount + 1, #FSH do FSH[i] = nil end
+  end
   local discCol = C.disc
   local levels = SHADE_LEVELS - 1
   local inFront = allInFront
+  local SX, KEY, FCOL, FSH, KF = SX, KEY, FCOL, FSH, KEY_FACES
   local n = 0
   for i = 1, faceLimit do
     local nx, ny, nz = FNX[i], FNY[i], FNZ[i]
@@ -561,20 +584,20 @@ local function heliFaces()
     if facing > 0 or FTWO[i] then
       local d = FD[i]
       if inFront or (SX[FA[i]] and SX[FB[i]] and SX[FC[i]] and (d == 0 or SX[d])) then
-        local mat = FMAT[i]
-        if mat == MAT_DISC then
-          FCOL[i] = discCol
-        else
+        local sh = FSH[i]
+        if sh then
           local lam = nx * lmx + ny * lmy + nz * lmz
           if facing < 0 then lam = -lam end
           if lam < 0 then lam = 0 end
-          FCOL[i] = SHADES[mat][(lam * levels + 1.5) // 1]
+          FCOL[i] = sh[(lam * levels + 1.5) // 1]
+        else
+          FCOL[i] = discCol
         end
         -- Far to near: a larger depth gives a smaller key. The face index
         -- rides in the low bits so a plain numeric sort (no Lua
         -- comparator) does the ordering.
         n = n + 1
-        KEY[n] = ((8 - (FCX[i] * a31 + FCY[i] * a32 + FCZ[i] * a33)) * 4096) // 1 * KEY_FACES + i
+        KEY[n] = ((8 - (FCX[i] * a31 + FCY[i] * a32 + FCZ[i] * a33)) * 4096) // 1 * KF + i
       end
     end
   end
@@ -708,9 +731,11 @@ function render.frame(h, top, w, hgt, discRoll, discPitch)
   end
 
   -- Field markings.
-  local lc = C.line
-  line(STRIP_X0, STRIP_Y0, 0, STRIP_X1, STRIP_Y0, 0, lc)
-  line(STRIP_X0, STRIP_Y1, 0, STRIP_X1, STRIP_Y1, 0, lc)
+  if detail == 2 then
+    local lc = C.line
+    line(STRIP_X0, STRIP_Y0, 0, STRIP_X1, STRIP_Y0, 0, lc)
+    line(STRIP_X0, STRIP_Y1, 0, STRIP_X1, STRIP_Y1, 0, lc)
+  end
   local px, py = render.PAD_X, render.PAD_Y
   local pm = C.padMark
   line(px - 0.5, py - 0.7, 0, px - 0.5, py + 0.7, 0, pm)
@@ -735,6 +760,7 @@ end
 -- changed).
 function render.dirty()
   lastW = nil
+  tiltRoll, fshStale = nil, true
 end
 
 -- Detail level: 1 low (default), 2 high.
@@ -745,11 +771,12 @@ end
 
 local function drawTris(from, to)
   local last
-  local dtri = lcd.drawFilledTriangle
+  local dtri, color = lcd.drawFilledTriangle, lcd.color
+  local X1, Y1, X2, Y2, X3, Y3, CO = TX1, TY1, TX2, TY2, TX3, TY3, TCOL
   for i = from, to do
-    local col = TCOL[i]
-    if col ~= last then lcd.color(col); last = col end
-    dtri(TX1[i], TY1[i], TX2[i], TY2[i], TX3[i], TY3[i])
+    local col = CO[i]
+    if col ~= last then color(col); last = col end
+    dtri(X1[i], Y1[i], X2[i], Y2[i], X3[i], Y3[i])
   end
 end
 
@@ -757,6 +784,7 @@ local function drawTrees(from, to)
   if from > to then return end
   local rect, circle, color = lcd.drawFilledRectangle, lcd.drawFilledCircle, lcd.color
   local trunk = C.trunk
+  local KX, KY, KW, KH, RX, RY, RR, RCOL = KX, KY, KW, KH, RX, RY, RR, RCOL
   for i = from, to do
     local kh = KH[i]
     if kh > 0 then
@@ -772,17 +800,19 @@ end
 -- view), into a w x h window.
 function render.paint(w, h)
   lcd.setClipping(0, scrTop, w, scrH)
-  local rect = lcd.drawFilledRectangle
+  local rect, color = lcd.drawFilledRectangle, lcd.color
+  local BY, BH, BCOL = BY, BH, BCOL
   for i = 1, bandCount do
-    lcd.color(BCOL[i])
+    color(BCOL[i])
     rect(0, BY[i], w, BH[i])
   end
   drawTris(1, triCount)
   local dline = lcd.drawLine
   local last
+  local LX1, LY1, LX2, LY2, LCOL = LX1, LY1, LX2, LY2, LCOL
   for i = 1, lineCount do
     local col = LCOL[i]
-    if col ~= last then lcd.color(col); last = col end
+    if col ~= last then color(col); last = col end
     dline(LX1[i], LY1[i], LX2[i], LY2[i])
   end
   drawTrees(1, treeFar)
@@ -790,11 +820,12 @@ function render.paint(w, h)
   if heliMode == 2 then
     local FA, FB, FC, FD = heli.FA, heli.FB, heli.FC, heli.FD
     local dtri = lcd.drawFilledTriangle
+    local SX, SY, KEY, FCOL, KF = SX, SY, KEY, FCOL, KEY_FACES
     last = nil
     for k = 1, keyCount do
-      local i = KEY[k] % KEY_FACES
+      local i = KEY[k] % KF
       local col = FCOL[i]
-      if col ~= last then lcd.color(col); last = col end
+      if col ~= last then color(col); last = col end
       local a, c = FA[i], FC[i]
       local ax, ay, cx3, cy3 = SX[a], SY[a], SX[c], SY[c]
       local b = FB[i]

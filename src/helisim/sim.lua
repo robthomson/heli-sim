@@ -173,22 +173,32 @@ local function resetHeli(state)
   render.dirty()
 end
 
+local function formatHud(state)
+  if not state.hudLeftDirty then return end
+  state.hudLeftDirty = false
+  state.hudLeft = string.format("ALT %.1fm  SPD %.1fm/s  COL %+d%%",
+    state.hudAlt / 10, state.hudSpd / 10, floor(state.hudCol))
+end
+
 local function setFont(f)
   if f then lcd.font(f) end
 end
 
 -- HUD strings, rebuilt only when what they show changes. Returns whether
 -- the bar texts changed and whether the centre message (drawn over the
--- scene) changed.
+-- scene) changed. The flight data line changes nearly every frame in
+-- flight, so it is only formatted when the bar is drawn (formatHud).
 local function updateHud(state)
   local h = state.h
   local changed = false
-  local alt = floor(max(0, h.pz - 0.23) * 10 + 0.5)
-  local spd = floor(sqrt(h.vx * h.vx + h.vy * h.vy + h.vz * h.vz) * 10 + 0.5)
-  local col = floor(h.coll * 100 + 0.5)
+  local up = h.pz - 0.23
+  if up < 0 then up = 0 end
+  local alt = (up * 10 + 0.5) // 1
+  local spd = (sqrt(h.vx * h.vx + h.vy * h.vy + h.vz * h.vz) * 10 + 0.5) // 1
+  local col = (h.coll * 100 + 0.5) // 1
   if alt ~= state.hudAlt or spd ~= state.hudSpd or col ~= state.hudCol then
     state.hudAlt, state.hudSpd, state.hudCol = alt, spd, col
-    state.hudLeft = string.format("ALT %.1fm  SPD %.1fm/s  COL %+d%%", alt / 10, spd / 10, col)
+    state.hudLeftDirty = true
     changed = true
   end
   local secs = floor(state.flightTime)
@@ -526,6 +536,7 @@ function sim.paint(state)
     lcd.drawFilledRectangle(0, 0, w, BAR_H)
     setFont(FONT_S)
     lcd.color(WHITE)
+    formatHud(state)
     lcd.drawText(6, 2, state.hudLeft)
     lcd.drawText(w // 2, 2, state.hudMode, CENTERED)
     lcd.drawText(w - 6, 2, state.hudTime, RIGHT)
