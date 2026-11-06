@@ -14,6 +14,8 @@ You stand at the edge of a flying field and the view turns to follow the helicop
 
 ## Flying
 
+HeliSim runs on the whole screen, without the title bar. The flight data, flight mode and flight time sit on a black bar at the top.
+
 - Lower the throttle stick to start. The rotor spools up over the spool-up time (3 seconds by default).
 - **Acro** (default): the sticks set roll, pitch and yaw rates, as with a flybarless helicopter.
 - **Self-level**: the cyclic sets the tilt, and centre stick levels the helicopter (it also rolls out of inverted).
@@ -59,14 +61,14 @@ Stick sources are the analog sticks by function (`CATEGORY_ANALOG` members 0–3
 
 Ethos aborts a `paint` that runs about 20000 Lua instructions ("Max instructions count reached"). This was measured in the Ethos simulator, where `wakeup` was not held to the same budget. So `wakeup` does all the work (physics, camera, scenery, projection, culling, shading, sorting) into flat display lists, and `paint` only replays them, using about 25% of its budget. No tables are allocated per frame. Faces are sorted with a plain numeric `table.sort` (depth and face index packed into one number), so sorting runs no Lua comparator.
 
-When the helicopter is small on screen it is drawn without the mast, tail rotor and skids, and beyond 25 m one scale serves the whole model. When nothing has moved (sitting on the pad) the frame is not rebuilt or repainted.
+When the helicopter is small on screen it is drawn without the mast, tail rotor and skids, and beyond 15 m one scale serves the whole model (the perspective inside it would move its outline by 1-2 px). When nothing has moved (sitting on the pad) the frame is not rebuilt or repainted. A new frame invalidates rectangles only: a plain `lcd.invalidate()` makes Ethos clear the window first, which cost 1 fps at High detail and 2-3 fps at Low on an X20. The HUD text sits on opaque bars outside the scene, so it is drawn without a shadow and only every other frame; in between only the scene's rectangle is invalidated and Ethos keeps the bars.
 
-On a radio the frame rate is set by the `lcd` fills, not by Lua, so the **Detail** setting trades scenery for speed:
+On a radio both the Lua work and the `lcd` fills cost frame time, and the **Detail** setting trades scenery for speed:
 
-- **Low** (default): the hills and tree line are flat bands, there is no mown strip around the pad, each tree is one triangle, the shadow is two, the rotor disc has 8 segments and the low detail model is used until the helicopter is close.
-- **High**: hill and tree line silhouettes, the mown strip, two-tier trees, a 12-segment rotor disc and the full model from about 16 m.
+- **Low** (default): the hills and tree line are flat bands, there is no mown strip around the pad (nor its edge lines), the shadow is two triangles, the rotor disc has 8 segments and the low detail model is used until the helicopter is close.
+- **High**: hill and tree line silhouettes, the mown strip, a 12-segment rotor disc and the full model from about 16 m.
 
-Turn on **Show CPU stats** to see paint usage, wakeups per second, triangle and face counts, memory and stick values.
+Turn on **Show CPU stats** to see, on a second bar at the bottom, per second, the paints (fps) and wakeups, the mean time of a wakeup and of a paint, and the paint's instruction budget; below that triangle and face counts, memory and stick values.
 
 ## VS Code deploy
 

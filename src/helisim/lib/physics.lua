@@ -13,9 +13,9 @@
 -- The collective gives thrust along the body up axis, negative collective
 -- pushes the other way (3D: inverted flight). Drag is stronger through the
 -- rotor disc than edgewise. Near the ground the rotor gets some ground
--- effect. step() is called with a fixed dt; no tables are allocated.
+-- effect. run() steps with a fixed dt; no tables are allocated.
 
-local sqrt, abs, min, max = math.sqrt, math.abs, math.min, math.max
+local sqrt, abs = math.sqrt, math.abs
 
 local physics = {}
 
@@ -68,173 +68,194 @@ function physics.reset(h, x, y, heading)
   h.crashReason = nil
 end
 
-local function crash(h, reason)
-  h.crashed = true
-  h.crashReason = reason
-  h.vx, h.vy, h.vz = 0, 0, 0
-  h.p, h.q, h.r = 0, 0, 0
-end
-
--- Level the attitude, keeping the heading.
-local function levelAttitude(h)
-  local nx, ny = h.r11, h.r21
-  local n = sqrt(nx * nx + ny * ny)
-  if n < 1e-3 then nx, ny, n = -h.r12, -h.r22, 1 end
-  nx, ny = nx / n, ny / n
-  h.r11, h.r12, h.r13 = nx, -ny, 0
-  h.r21, h.r22, h.r23 = ny, nx, 0
-  h.r31, h.r32, h.r33 = 0, 0, 1
-end
-
 -- in: roll, pitch, yaw, coll in -1..1 (already shaped), plus
 -- in.rate (rad/s at full stick), in.yawRate, in.response (1/s: how fast the
 -- rates follow the commands), in.spoolTime (s), in.level (bool), in.spoolUp
 -- (bool: rotor running).
-function physics.step(h, inp, dt)
-  if h.crashed then return end
+--
+-- Runs n steps of dt. The state lives in locals for all of them and goes
+-- back into h once at the end: on the radio a Lua call and a table field
+-- cost far more than a local, and this used to be one call per step.
+function physics.run(h, inp, dt, n)
+  if h.crashed or n < 1 then return end
 
-  -- Rotor speed: spools up over a few seconds, down when stopped.
+  -- Inputs, the same for every step.
   local spoolTarget = inp.spoolUp and 1 or 0
-  if h.spool < spoolTarget then
-    h.spool = min(1, h.spool + dt / inp.spoolTime)
-  elseif h.spool > spoolTarget then
-    h.spool = max(0, h.spool - dt * 0.5)
-  end
-  local spool = h.spool
+  local spoolTime = inp.spoolTime
+  local level = inp.level
+  local roll, pitch, rate = inp.roll, inp.pitch, inp.rate
+  local rc = -inp.yaw * inp.yawRate
+  local response = inp.response
+  local collIn = inp.coll
+  local kColl = dt * COLLECTIVE_RESPONSE
+  if kColl > 1 then kColl = 1 end
+  local kSettle = dt * 20
+  if kSettle > 1 then kSettle = 1 end
 
+  -- State.
+  local spool, coll, landed = h.spool, h.coll, h.landed
   local r11, r12, r13 = h.r11, h.r12, h.r13
   local r21, r22, r23 = h.r21, h.r22, h.r23
   local r31, r32, r33 = h.r31, h.r32, h.r33
+  local p, q, r = h.p, h.q, h.r
+  local vx, vy, vz = h.vx, h.vy, h.vz
+  local px, py, pz = h.px, h.py, h.pz
+  local crashReason
 
-  -- Rate commands.
-  local pc, qc
-  if inp.level then
-    -- Target up vector from the stick tilt, in the heading frame.
-    local fx, fy = r11, r21                     -- nose, flattened
-    local fn = sqrt(fx * fx + fy * fy)
-    if fn < 1e-3 then fx, fy, fn = r13, r23, sqrt(r13 * r13 + r23 * r23) + 1e-6 end
-    fx, fy = fx / fn, fy / fn
-    local rx, ry = fy, -fx                      -- right of the heading
-    local tp, tr = inp.pitch * LEVEL_MAX_TILT, inp.roll * LEVEL_MAX_TILT
-    local ux, uy, uz = fx * tp + rx * tr, fy * tp + ry * tr, 1
-    local un = sqrt(ux * ux + uy * uy + uz * uz)
-    ux, uy, uz = ux / un, uy / un, uz / un
-    -- Error axis: body up x target up (world), into body axes.
-    local ex = r23 * uz - r33 * uy
-    local ey = r33 * ux - r13 * uz
-    local ez = r13 * uy - r23 * ux
-    -- Fully inverted: the cross product vanishes; roll out.
-    if r33 < -0.95 and abs(ex) + abs(ey) + abs(ez) < 0.3 then ex, ey, ez = r11, r21, r31 end
-    pc = (r11 * ex + r21 * ey + r31 * ez) * LEVEL_GAIN
-    qc = (r12 * ex + r22 * ey + r32 * ez) * LEVEL_GAIN
-    local lim = inp.rate
-    if pc > lim then pc = lim elseif pc < -lim then pc = -lim end
-    if qc > lim then qc = lim elseif qc < -lim then qc = -lim end
-  else
-    pc = inp.roll * inp.rate
-    qc = inp.pitch * inp.rate
-  end
-  local rc = -inp.yaw * inp.yawRate
-
-  -- Head response scales with rotor speed.
-  local kc = min(1, dt * inp.response * spool)
-  local ky = min(1, dt * inp.response * 1.3 * spool)
-  h.coll = h.coll + (inp.coll - h.coll) * min(1, dt * COLLECTIVE_RESPONSE)
-
-  local thrust = h.coll * THRUST_MAX * spool * spool
-  if h.pz < GROUND_EFFECT_H + 1 and r33 > 0.5 then
-    local hh = h.pz + SKZ
-    if hh < GROUND_EFFECT_H then
-      local k = 1 - max(0, hh) / GROUND_EFFECT_H
-      thrust = thrust * (1 + GROUND_EFFECT * k * k)
+  for _ = 1, n do
+    -- Rotor speed: spools up over a few seconds, down when stopped.
+    if spool < spoolTarget then
+      spool = spool + dt / spoolTime
+      if spool > 1 then spool = 1 end
+    elseif spool > spoolTarget then
+      spool = spool - dt * 0.5
+      if spool < 0 then spool = 0 end
     end
-  end
 
-  if h.landed then
-    h.p, h.q = 0, 0
-    h.r = h.r + (0 - h.r) * min(1, dt * 20)
-    -- Lift off when the rotor carries more than the weight.
-    if thrust * r33 > G * 1.02 then
-      h.landed = false
-      h.pz = h.pz + 0.01
+    -- Rate commands.
+    local pc, qc
+    if level then
+      -- Target up vector from the stick tilt, in the heading frame.
+      local fx, fy = r11, r21                     -- nose, flattened
+      local fn = sqrt(fx * fx + fy * fy)
+      if fn < 1e-3 then fx, fy, fn = r13, r23, sqrt(r13 * r13 + r23 * r23) + 1e-6 end
+      fx, fy = fx / fn, fy / fn
+      local rx, ry = fy, -fx                      -- right of the heading
+      local tp, tr = pitch * LEVEL_MAX_TILT, roll * LEVEL_MAX_TILT
+      local ux, uy, uz = fx * tp + rx * tr, fy * tp + ry * tr, 1
+      local un = sqrt(ux * ux + uy * uy + uz * uz)
+      ux, uy, uz = ux / un, uy / un, uz / un
+      -- Error axis: body up x target up (world), into body axes.
+      local ex = r23 * uz - r33 * uy
+      local ey = r33 * ux - r13 * uz
+      local ez = r13 * uy - r23 * ux
+      -- Fully inverted: the cross product vanishes; roll out.
+      if r33 < -0.95 and abs(ex) + abs(ey) + abs(ez) < 0.3 then ex, ey, ez = r11, r21, r31 end
+      pc = (r11 * ex + r21 * ey + r31 * ez) * LEVEL_GAIN
+      qc = (r12 * ex + r22 * ey + r32 * ez) * LEVEL_GAIN
+      if pc > rate then pc = rate elseif pc < -rate then pc = -rate end
+      if qc > rate then qc = rate elseif qc < -rate then qc = -rate end
     else
-      return
+      pc = roll * rate
+      qc = pitch * rate
+    end
+
+    -- Head response scales with rotor speed.
+    local kc = dt * response * spool
+    if kc > 1 then kc = 1 end
+    local ky = dt * response * 1.3 * spool
+    if ky > 1 then ky = 1 end
+    coll = coll + (collIn - coll) * kColl
+
+    local thrust = coll * THRUST_MAX * spool * spool
+    if pz < GROUND_EFFECT_H + 1 and r33 > 0.5 then
+      local hh = pz + SKZ
+      if hh < GROUND_EFFECT_H then
+        local k = 1 - (hh > 0 and hh or 0) / GROUND_EFFECT_H
+        thrust = thrust * (1 + GROUND_EFFECT * k * k)
+      end
+    end
+
+    if landed then
+      p, q = 0, 0
+      r = r + (0 - r) * kSettle
+      -- Lift off when the rotor carries more than the weight.
+      if thrust * r33 > G * 1.02 then
+        landed = false
+        pz = pz + 0.01
+      end
+    end
+
+    if not landed then
+      p = p + (pc - p) * kc
+      q = q + (qc - q) * kc
+      r = r + (rc - r) * ky
+
+      -- Attitude: R = R * (I + [w]x dt), then re-orthonormalise.
+      local wx, wy, wz = p * dt, q * dt, r * dt
+      r11, r12, r13 = r11 + r12 * wz - r13 * wy, r12 - r11 * wz + r13 * wx, r13 + r11 * wy - r12 * wx
+      r21, r22, r23 = r21 + r22 * wz - r23 * wy, r22 - r21 * wz + r23 * wx, r23 + r21 * wy - r22 * wx
+      r31, r32, r33 = r31 + r32 * wz - r33 * wy, r32 - r31 * wz + r33 * wx, r33 + r31 * wy - r32 * wx
+      local nn = 1 / sqrt(r11 * r11 + r21 * r21 + r31 * r31)
+      r11, r21, r31 = r11 * nn, r21 * nn, r31 * nn
+      local d = r11 * r12 + r21 * r22 + r31 * r32
+      r12, r22, r32 = r12 - d * r11, r22 - d * r21, r32 - d * r31
+      nn = 1 / sqrt(r12 * r12 + r22 * r22 + r32 * r32)
+      r12, r22, r32 = r12 * nn, r22 * nn, r32 * nn
+      r13 = r21 * r32 - r31 * r22
+      r23 = r31 * r12 - r11 * r32
+      r33 = r11 * r22 - r21 * r12
+
+      -- Forces: drag per unit mass in body axes, thrust along body up.
+      local bx = r11 * vx + r21 * vy + r31 * vz
+      local by = r12 * vx + r22 * vy + r32 * vz
+      local bz = r13 * vx + r23 * vy + r33 * vz
+      local fx = -(DRAG_XY_Q * (bx < 0 and -bx or bx) + DRAG_XY_L) * bx
+      local fy = -(DRAG_XY_Q * (by < 0 and -by or by) + DRAG_XY_L) * by
+      local fz = thrust - (DRAG_Z_Q * (bz < 0 and -bz or bz) + DRAG_Z_L) * bz
+      local ax = r11 * fx + r12 * fy + r13 * fz
+      local ay = r21 * fx + r22 * fy + r23 * fz
+      local az = r31 * fx + r32 * fy + r33 * fz - G
+
+      vx, vy, vz = vx + ax * dt, vy + ay * dt, vz + az * dt
+      px, py, pz = px + vx * dt, py + vy * dt, pz + vz * dt
+
+      -- Ground contact. Only worth checking near the ground.
+      if pz <= 1.6 then
+        -- The lowest point of the rotor disc, then the tail.
+        if pz + r33 * HUBZ - sqrt(r31 * r31 + r32 * r32) * RR < 0.0 then
+          crashReason = "Blade strike"
+          break
+        end
+        if pz + r31 * TAILX + r33 * TAILZ < 0 then
+          crashReason = "Tail strike"
+          break
+        end
+        -- Skids: lowest of the four ends.
+        local zx1, zx2, zy = r31 * SKX1, r31 * SKX2, r32 * SKY
+        if zy < 0 then zy = -zy end
+        local low = pz + r33 * SKZ
+        low = low + (zx2 < zx1 and zx2 or zx1) - zy
+        if low < 0 then
+          if r33 < LAND_MIN_UPRIGHT then
+            crashReason = "Tipped over"
+          elseif vz < -LAND_MAX_SINK then
+            crashReason = "Hard landing"
+          elseif sqrt(vx * vx + vy * vy) > LAND_MAX_SLIDE then
+            crashReason = "Skid catch"
+          end
+          if crashReason then
+            if pz < 0.05 then pz = 0.05 end
+            break
+          end
+          -- Touch down: level the attitude, keeping the heading.
+          landed = true
+          local nx, ny = r11, r21
+          local nl = sqrt(nx * nx + ny * ny)
+          if nl < 1e-3 then nx, ny, nl = -r12, -r22, 1 end
+          nx, ny = nx / nl, ny / nl
+          r11, r12, r13 = nx, -ny, 0
+          r21, r22, r23 = ny, nx, 0
+          r31, r32, r33 = 0, 0, 1
+          pz = -SKZ
+          vx, vy, vz = 0, 0, 0
+          p, q = 0, 0
+        end
+      end
     end
   end
 
-  local p = h.p + (pc - h.p) * kc
-  local q = h.q + (qc - h.q) * kc
-  local r = h.r + (rc - h.r) * ky
-  h.p, h.q, h.r = p, q, r
-
-  -- Attitude: R = R * (I + [w]x dt), then re-orthonormalise.
-  local wx, wy, wz = p * dt, q * dt, r * dt
-  r11, r12, r13 = r11 + r12 * wz - r13 * wy, r12 - r11 * wz + r13 * wx, r13 + r11 * wy - r12 * wx
-  r21, r22, r23 = r21 + r22 * wz - r23 * wy, r22 - r21 * wz + r23 * wx, r23 + r21 * wy - r22 * wx
-  r31, r32, r33 = r31 + r32 * wz - r33 * wy, r32 - r31 * wz + r33 * wx, r33 + r31 * wy - r32 * wx
-  local n = 1 / sqrt(r11 * r11 + r21 * r21 + r31 * r31)
-  r11, r21, r31 = r11 * n, r21 * n, r31 * n
-  local d = r11 * r12 + r21 * r22 + r31 * r32
-  r12, r22, r32 = r12 - d * r11, r22 - d * r21, r32 - d * r31
-  n = 1 / sqrt(r12 * r12 + r22 * r22 + r32 * r32)
-  r12, r22, r32 = r12 * n, r22 * n, r32 * n
-  r13 = r21 * r32 - r31 * r22
-  r23 = r31 * r12 - r11 * r32
-  r33 = r11 * r22 - r21 * r12
+  h.spool, h.coll, h.landed = spool, coll, landed
   h.r11, h.r12, h.r13 = r11, r12, r13
   h.r21, h.r22, h.r23 = r21, r22, r23
   h.r31, h.r32, h.r33 = r31, r32, r33
-
-  -- Forces.
-  local vx, vy, vz = h.vx, h.vy, h.vz
-  local bx = r11 * vx + r21 * vy + r31 * vz
-  local by = r12 * vx + r22 * vy + r32 * vz
-  local bz = r13 * vx + r23 * vy + r33 * vz
-  local fx = -(DRAG_XY_Q * abs(bx) + DRAG_XY_L) * bx
-  local fy = -(DRAG_XY_Q * abs(by) + DRAG_XY_L) * by
-  local fz = thrust - (DRAG_Z_Q * abs(bz) + DRAG_Z_L) * bz
-  local ax = r11 * fx + r12 * fy + r13 * fz
-  local ay = r21 * fx + r22 * fy + r23 * fz
-  local az = r31 * fx + r32 * fy + r33 * fz - G
-
-  vx, vy, vz = vx + ax * dt, vy + ay * dt, vz + az * dt
+  h.p, h.q, h.r = p, q, r
   h.vx, h.vy, h.vz = vx, vy, vz
-  local px, py, pz = h.px + vx * dt, h.py + vy * dt, h.pz + vz * dt
   h.px, h.py, h.pz = px, py, pz
-
-  -- Ground contact. Only worth checking near the ground.
-  if pz > 1.6 then return end
-
-  -- The lowest point of the rotor disc, then the tail.
-  local hz = pz + r33 * HUBZ
-  if hz - sqrt(r31 * r31 + r32 * r32) * RR < 0.0 then
-    crash(h, "Blade strike")
-    return
-  end
-  if pz + r31 * TAILX + r33 * TAILZ < 0 then
-    crash(h, "Tail strike")
-    return
-  end
-  -- Skids: lowest of the four ends.
-  local low = pz + r33 * SKZ
-  local zx1, zx2, zy = r31 * SKX1, r31 * SKX2, abs(r32 * SKY)
-  low = low + min(zx1, zx2) - zy
-  if low < 0 then
-    local slide = sqrt(vx * vx + vy * vy)
-    if r33 < LAND_MIN_UPRIGHT then
-      crash(h, "Tipped over")
-    elseif vz < -LAND_MAX_SINK then
-      crash(h, "Hard landing")
-    elseif slide > LAND_MAX_SLIDE then
-      crash(h, "Skid catch")
-    else
-      h.landed = true
-      levelAttitude(h)
-      h.pz = -SKZ
-      h.vx, h.vy, h.vz = 0, 0, 0
-      h.p, h.q = 0, 0
-    end
-    if h.crashed then h.pz = max(pz, 0.05) end
+  if crashReason then
+    h.crashed, h.crashReason = true, crashReason
+    h.vx, h.vy, h.vz = 0, 0, 0
+    h.p, h.q, h.r = 0, 0, 0
   end
 end
 
