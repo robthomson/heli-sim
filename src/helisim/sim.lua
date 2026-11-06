@@ -314,6 +314,7 @@ function sim.create()
   local state = {
     cfg = loadConfig(),
     h = {},
+    view = {},           -- the helicopter as drawn (position and attitude)
     inp = {roll = 0, pitch = 0, yaw = 0, coll = 0, rate = 0, yawRate = 0, response = 14, spoolTime = 3, level = false, spoolUp = false},
     phase = "boot",
     manualZoom = 1,
@@ -411,11 +412,13 @@ function sim.wakeup(state)
   if state.phase ~= "crashed" then
     state.acc = state.acc + dt
     local n = 0
-    while state.acc >= STEP and n < MAX_STEPS do
-      physics.step(h, inp, STEP)
-      state.acc = state.acc - STEP
+    local acc = state.acc
+    while acc >= STEP and n < MAX_STEPS do
+      acc = acc - STEP
       n = n + 1
     end
+    state.acc = acc
+    physics.run(h, inp, STEP, n)
     if not h.landed then state.flightTime = state.flightTime + dt end
     local d2 = h.px * h.px + h.py * h.py
     if d2 > RANGE_LIMIT * RANGE_LIMIT then
@@ -429,11 +432,26 @@ function sim.wakeup(state)
     end
   end
 
+  -- Draw the helicopter where it is now, not where the last physics step
+  -- left it: a frame holds a varying number of 20 ms steps (3 or 4 at
+  -- 13 fps), and drawing the stepped state made fast passes stutter. The
+  -- time not stepped yet (state.acc, under one step) is carried forward
+  -- with the velocity and the body rates, for the picture only.
+  local view, a = state.view, state.acc
+  view.px, view.py, view.pz = h.px + h.vx * a, h.py + h.vy * a, h.pz + h.vz * a
+  local wx, wy, wz = h.p * a, h.q * a, h.r * a
+  local r11, r12, r13 = h.r11, h.r12, h.r13
+  local r21, r22, r23 = h.r21, h.r22, h.r23
+  local r31, r32, r33 = h.r31, h.r32, h.r33
+  view.r11, view.r12, view.r13 = r11 + r12 * wz - r13 * wy, r12 - r11 * wz + r13 * wx, r13 + r11 * wy - r12 * wx
+  view.r21, view.r22, view.r23 = r21 + r22 * wz - r23 * wy, r22 - r21 * wz + r23 * wx, r23 + r21 * wy - r22 * wx
+  view.r31, view.r32, view.r33 = r31 + r32 * wz - r33 * wy, r32 - r31 * wz + r33 * wx, r33 + r31 * wy - r32 * wx
+
   local w, wh = lcd.getWindowSize()
   local sceneH = wh - BAR_H - (cfg.stats and STATS_H or 0)
-  render.track(h, cfg.autoZoom, state.manualZoom, dt)
+  render.track(view, cfg.autoZoom, state.manualZoom, dt)
   local discTilt = rad(8)
-  local drew = render.frame(h, BAR_H, w, sceneH, inp.roll * discTilt * h.spool, inp.pitch * discTilt * h.spool)
+  local drew = render.frame(view, BAR_H, w, sceneH, inp.roll * discTilt * h.spool, inp.pitch * discTilt * h.spool)
   local barChanged, msgChanged = updateHud(state)
   if barChanged or cfg.stats then state.barDirty = true end
 
